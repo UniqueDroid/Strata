@@ -67,7 +67,7 @@ set "HIP_PATH=%ROCM%"
 set "ROCM_PATH=%ROCM%"
 set "PATH=%ROCM%\bin;%ROCM%\lib\llvm\bin;%PATH%"
 
-rem ---- 3. configure + build (STRATA_PORTABLE: the CPU kernels for an AVX2 baseline, as in the NVIDIA zip)
+rem ---- 3. configure + build (STRATA_PORTABLE: a build for other PCs; on Windows the CMake default STRATA_ISA_FLOOR=avx keeps ggml-cpu at AVX)
 set "GGML="
 if defined STRATA_GGML_DIR set "GGML=-DSTRATA_GGML_DIR=%STRATA_GGML_DIR:\=/%"
 if not exist "%BUILD_DIR%\build.ninja" (
