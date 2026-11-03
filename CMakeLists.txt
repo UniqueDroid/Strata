@@ -36,14 +36,20 @@ option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime"
 # computes every CPU expert row, is built for this floor instead of AVX2 or the build host: "avx" (Sandy/Ivy Bridge:
 # AVX, no FMA/F16C/AVX2) or "none" (SSE4.2 + POPCNT: Nehalem/Westmere).  Strata's own AVX2/AVX-512 kernels stay in the
 # binary behind their CPU checks; the router lookahead gets an AVX1 kernel.  Empty (the default) changes nothing.
-set(STRATA_ISA_FLOOR "" CACHE STRING "experimental older-CPU build: empty (default, AVX2 floor), avx, or none (SSE4.2)")
+# Fork UniqueDroid/Strata: every Windows build gets the AVX floor unless the command line says otherwise
+# (-DSTRATA_ISA_FLOOR= gives the upstream AVX2 build back).  Other systems keep upstream's empty default.
+if(WIN32)
+  set(_strata_isa_floor_default "avx")
+else()
+  set(_strata_isa_floor_default "")
+endif()
+set(STRATA_ISA_FLOOR "${_strata_isa_floor_default}" CACHE STRING "older-CPU build: empty (AVX2 floor), avx, or none (SSE4.2); Windows defaults to avx")
 set_property(CACHE STRATA_ISA_FLOOR PROPERTY STRINGS "" avx none)
 if(NOT STRATA_ISA_FLOOR STREQUAL "" AND NOT STRATA_ISA_FLOOR STREQUAL "avx" AND NOT STRATA_ISA_FLOOR STREQUAL "none")
   message(FATAL_ERROR "STRATA_ISA_FLOOR must be empty, avx or none (got '${STRATA_ISA_FLOOR}')")
 endif()
-if(STRATA_ISA_FLOOR AND STRATA_PORTABLE)
-  message(FATAL_ERROR "STRATA_ISA_FLOOR (an older-CPU build) and STRATA_PORTABLE (the AVX2 release build) exclude each other")
-endif()
+# STRATA_PORTABLE with a floor: a build for other PCs (static MSVC runtime, no -march=native) whose ggml-cpu stops at the floor
+# instead of AVX2.  That is how the fork's ready-made Windows engine is built (packaging/build_windows_avx.py).
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 endif()
@@ -2070,7 +2076,7 @@ if(STRATA_NATIVE_EXPERTS)
     set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
     set(STRATA_ARM64_ARCH "armv8.2-a+dotprod+fp16+i8mm" CACHE STRING "arm64: ggml-cpu's -march for a STRATA_PORTABLE build")
     set(GGML_CPU_ARM_ARCH "${STRATA_ARM64_ARCH}" CACHE STRING "" FORCE)
-  elseif(STRATA_PORTABLE)
+  elseif(STRATA_PORTABLE AND NOT STRATA_ISA_FLOOR)
     set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
     foreach(_f GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
       set(${_f} ON CACHE BOOL "" FORCE)

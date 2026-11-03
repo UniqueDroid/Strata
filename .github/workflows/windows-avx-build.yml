@@ -1,0 +1,133 @@
+name: Windows AVX engine
+
+# The fork's ready-made Windows engine for CPUs with AVX and without AVX2 (STRATA_ISA_FLOOR=avx). The three programs are
+# built in their own jobs (each can take hours on a hosted runner), then zipped and published as this version's release,
+# where setup.py downloads strata-windows-x64.zip from.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/windows-avx-build.yml
+      - packaging/build_windows_avx.py
+      - CMakeLists.txt
+      - cmake/**
+      - include/**
+      - src/**
+      - third_party/**
+      - tools/vision/**
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the zip as a release (off: only a workflow artifact)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-avx-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CUDA_FULL: 13.0.2
+  CUDA_DIR: v13.0
+  LLAMA_COMMIT: 3cf03257f219afbe7334045ff7c6a06ac68c627d
+
+jobs:
+  build:
+    name: ${{ matrix.part }}
+    runs-on: windows-2022
+    timeout-minutes: 350
+    strategy:
+      fail-fast: true
+      matrix:
+        part: [engine, vision, dsv41]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Ninja, llama.cpp and the CUDA toolkit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --disable-pip-version-check ninja
+          git init third_party/llama.cpp
+          git -C third_party/llama.cpp fetch --depth 1 https://github.com/ggml-org/llama.cpp $env:LLAMA_COMMIT
+          git -C third_party/llama.cpp checkout --quiet FETCH_HEAD
+          $url = "https://developer.download.nvidia.com/compute/cuda/$env:CUDA_FULL/local_installers/cuda_${env:CUDA_FULL}_windows.exe"
+          curl.exe -fsSL --retry 3 -o "$env:RUNNER_TEMP\cuda.exe" $url
+          if ($LASTEXITCODE -ne 0) { throw "CUDA download failed: $url" }
+          Start-Process -FilePath "$env:RUNNER_TEMP\cuda.exe" -ArgumentList '-s','-n' -Wait
+          $cuda = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\$env:CUDA_DIR"
+          if (-not (Test-Path "$cuda\bin\nvcc.exe")) { throw "nvcc.exe is not in $cuda\bin" }
+          & "$cuda\bin\nvcc.exe" --version
+          "CUDA_PATH=$cuda" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$cuda\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build ${{ matrix.part }}
+        shell: pwsh
+        run: python packaging/build_windows_avx.py ${{ matrix.part }} --out stage --build-root C:\b --jobs 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part-${{ matrix.part }}
+          path: stage/
+          if-no-files-found: error
+          retention-days: 3
+
+  package:
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+          pattern: part-*
+      - name: Package
+        id: pkg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Get-ChildItem parts -Recurse -File | Copy-Item -Destination stage
+          python packaging/build_windows_avx.py package --out stage --dist dist
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(strata VERSION ([\d.]+)').Matches[0].Groups[1].Value
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Start test (the engine asked for its version, with the CPU limited to AVX)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          STRATA_FORCE_ISA: avx
+        run: |
+          .\stage\strata.exe --version
+          "exit code $LASTEXITCODE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strata-windows-avx
+          path: dist/
+          if-no-files-found: error
+      - name: Publish the release
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          $tag = "v$env:VERSION"
+          $notes = "Windows engine for CPUs with AVX and without AVX2 (STRATA_ISA_FLOOR=avx), built by this fork from $env:GITHUB_SHA. Not an official Strata release."
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Strata $env:VERSION (Windows AVX)" --notes $notes --latest
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          gh release upload $tag (Get-ChildItem dist/*.zip).FullName --repo $env:GITHUB_REPOSITORY --clobber
+          exit $LASTEXITCODE

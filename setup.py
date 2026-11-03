@@ -242,12 +242,15 @@ LLAMA_CPP_ZIP = f"https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMI
 # "https://github.com/<you>/Strata/releases/latest/download/" (or pass --prebuilt / set STRATA_PREBUILT_URL).
 # With the default, the release of this checkout's own version (PREBUILT_TAG_URL, CMakeLists.txt's version) is
 # tried first and the latest release is the fallback (#214): an older checkout keeps the engine it shipped with.
-PREBUILT_URL = "https://github.com/Niko1221/Strata/releases/latest/download/"
+# Fork UniqueDroid/Strata: Windows takes the AVX engine (STRATA_ISA_FLOOR=avx) from this fork's own releases.
+PREBUILT_URL = ("https://github.com/UniqueDroid/Strata/releases/latest/download/" if WIN
+                else "https://github.com/Niko1221/Strata/releases/latest/download/")
 # The repository the release assets and their SHA-256 come from; `engine_digest` reads the API here even
 # when --prebuilt points the download somewhere else, because the hash is only worth having if it comes
 # from somewhere the download does not.
 REPO = "Niko1221/Strata"
-PREBUILT_TAG_URL = "https://github.com/Niko1221/Strata/releases/download/v{version}/"
+PREBUILT_TAG_URL = ("https://github.com/UniqueDroid/Strata/releases/download/v{version}/" if WIN
+                    else "https://github.com/Niko1221/Strata/releases/download/v{version}/")
 PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
@@ -1570,7 +1573,7 @@ def cpu_floor(avx2: bool) -> str:
     if is_arm64():
         return ""
     if avx2:
-        return ""
+        return "avx" if WIN else ""                    # fork UniqueDroid/Strata: every Windows engine is the AVX build
     if WIN:
         f = _cpuid_floor()
     else:
@@ -5519,12 +5522,16 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
     acquisition.require("the ready-made engine")
     eng = engine_dir(toolkit)
     asset = CUDA12_ASSET if int(toolkit) == 12 else PREBUILT_ASSET
+    floor = cpu_floor(cpu_info()[1])                   # the engine must be built for this floor: the signed feed's are AVX2
     info = eng / "BUILD.json"
     if info.exists() and (eng / EXE).exists() and json.loads(info.read_text(encoding="utf-8")).get("backend") != "hip":
         meta = json.loads(info.read_text(encoding="utf-8"))
         ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
         if meta.get("source") == "local":              # compiled here: build_engine checks its source and cards
             return None
+        floor_ok = (meta.get("isa_floor") or "") == floor
+        if not floor_ok:
+            say(f"  The installed engine is not built for this CPU's floor ({floor or 'AVX2'}): replacing it ...")
         have = arch_numbers(meta.get("archs"))
         miss = [int(x) for x in gpu.get("archs", [gpu["arch"]])
                 if have and int(x) not in have and not (meta.get("ptx") and int(x) > max(have))]
@@ -5532,10 +5539,11 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
             warn(f"the installed engine is built for {', '.join(str(a) for a in have)}; your GPU is "
                  f"{', '.join(str(x) for x in miss)}: compiling instead")
             return None
-        if ver >= MIN_ENGINE:
+        if ver >= MIN_ENGINE and floor_ok:
             ok("ready-made engine already installed")
             return eng
-        say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
+        if floor_ok:
+            say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
         info.replace(eng / "BUILD.json.prev")   # kept for the .previous copy
     if is_arm64() and sys.platform.startswith("linux"):
         # a DGX Spark: the release has no flat engine zip for it (and the CUDA 12 engine is x86). The signed feed has the linux-aarch64
@@ -5560,7 +5568,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
             if i + 1 < len(bases):                     # #214: this checkout's release is not published (yet)
                 say(f"  No ready-made engine for v{source_version()} ({e}): the latest release instead")
                 continue
-            if int(toolkit) != 12:                     # 0.2 releases: the signed feed has it (#3469)
+            if int(toolkit) != 12 and not floor:       # 0.2 releases: the signed feed has it (#3469); its engines are AVX2
                 got = engine_from_feed(eng, updating)
                 if got is not None:
                     return got
@@ -5590,6 +5598,12 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         else:
             warn(f"the ready-made engine at {base} is version {meta.get('version')}; this setup needs "
                  f"{need}: compiling instead")
+        shutil.rmtree(tmp, ignore_errors=True)
+        drop_archive(z)
+        return None
+    if (meta.get("isa_floor") or "") != floor:
+        warn(f"the ready-made engine at {base} is built for {meta.get('isa_floor') or 'AVX2'}, this PC needs {floor or 'AVX2'}"
+             + ("" if updating else ": compiling instead"))
         shutil.rmtree(tmp, ignore_errors=True)
         drop_archive(z)
         return None
@@ -10034,17 +10048,19 @@ def main() -> int:
              "the NVFP4 pack, and DeepSeek-V4.1 2.00 bpw, on one DGX Spark (GB10). The Q2_0 and Gyro packs need the x86 kernels and do not "
              "run on this CPU")
     elif not avx2:
-        # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
+        # #394 #595 #623: upstream's ready-made engine is AVX2; an older CPU gets one compiled here (in this fork, on Windows
+        # with AVX, the ready-made AVX engine from the fork's release comes first and compiling is the fallback), whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
         # users on a few Xeons.  A warning, not a stop.
-        warn(f"this CPU has no AVX2: Strata support for it is EXPERIMENTAL and slow. Setup compiles the engine on this "
-             f"PC for {'AVX' if floor == 'avx' else 'SSE4.2'} (STRATA_ISA_FLOOR={floor}; 10-20 minutes, once), and the "
-             "CPU's share of the experts runs on ggml-cpu's kernels, a few times slower than on an AVX2 CPU. "
-             "See \"Older CPUs\" in docs/INSTALL.md")
+        fork_zip = WIN and floor == "avx" and not hip  # fork UniqueDroid/Strata: its release has this engine ready-made
+        warn(f"this CPU has no AVX2: Strata support for it is EXPERIMENTAL and slow. Setup "
+             + ("takes the fork's ready-made engine for AVX, or compiles it when there is none" if fork_zip else "compiles the engine on this PC")
+             + f" (STRATA_ISA_FLOOR={floor}), and the CPU's share of the experts runs on ggml-cpu's kernels, a few times "
+             "slower than on an AVX2 CPU. See \"Older CPUs\" in docs/INSTALL.md")
         if hip and WIN:
             fail("the older-CPU engine is compiled from source, and setup compiles the AMD engine on Linux only",
                  "use Linux for an AMD card on this CPU, or an NVIDIA card")
-        a.build = True
+        a.build = a.build or not fork_zip
     if a.check:
         say()
         any_fits = False

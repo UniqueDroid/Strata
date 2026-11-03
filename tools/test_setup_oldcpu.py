@@ -33,7 +33,12 @@ class FloorTest(unittest.TestCase):
         self.env.stop()
 
     def test_avx2_cpu_gets_the_normal_engine(self):
-        self.assertEqual(setup.cpu_floor(True), "")
+        with mock.patch.object(setup, "WIN", False):
+            self.assertEqual(setup.cpu_floor(True), "")
+
+    def test_fork_windows_is_always_the_avx_build(self):
+        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "is_arm64", return_value=False):
+            self.assertEqual(setup.cpu_floor(True), "avx")
 
     def test_linux_flags(self):
         with mock.patch.object(setup, "WIN", False):
