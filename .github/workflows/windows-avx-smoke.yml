@@ -1,8 +1,8 @@
 name: Windows AVX engine smoke test
 
 # Checks the published zip the way a PC gets it: the public download, the digest setup.py compares, the CUDA wheels setup.py
-# installs, then the programs started for real. Intel's SDE then runs them on an emulated Sandy Bridge (AVX, no AVX2), which
-# stops on any AVX2/FMA/AVX-512 instruction that actually executes. The runner has no GPU, so only start-up is covered.
+# installs, then the programs started for real. The runner has no GPU and its CPU has AVX2, so this covers the package and
+# start-up, not a run on an AVX-only CPU. (Intel's SDE would emulate one, but its download mirror hangs from hosted runners.)
 
 on:
   push:
@@ -16,20 +16,16 @@ on:
 permissions:
   contents: read
 
-env:
-  SDE_URL: https://downloadmirror.intel.com/859732/sde-external-9.58.0-2025-06-16-win.tar.xz
-
 jobs:
   smoke:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: ilammy/msvc-dev-cmd@v1
       - name: Download the published zip and compare its digest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,41 +67,3 @@ jobs:
           }
           .\stage\strata.exe --version
           if ($LASTEXITCODE -ne 0) { throw "strata --version exit $LASTEXITCODE" }
-      - name: Fetch Intel SDE
-        timeout-minutes: 15
-        run: |
-          curl.exe -fsSL --http1.1 --connect-timeout 30 --max-time 240 --retry 2 -o sde.tar.xz $env:SDE_URL
-          if ($LASTEXITCODE -ne 0) { throw "SDE download failed: curl $LASTEXITCODE" }
-          (Get-Item sde.tar.xz).Length
-          mkdir sde | Out-Null
-          tar -xf sde.tar.xz -C sde
-          if ($LASTEXITCODE -ne 0) { throw "SDE unpack failed: tar $LASTEXITCODE" }
-          $exe = (Get-ChildItem sde -Recurse -Filter sde.exe | Select-Object -First 1).FullName
-          "SDE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Control - SDE must stop a program that executes AVX2
-        shell: cmd
-        run: |
-          > avx2.c echo #include ^<immintrin.h^>
-          >> avx2.c echo int main(int c,char**v){volatile int x=c;__m256i a=_mm256_set1_epi32(x);a=_mm256_add_epi32(a,a);return _mm256_extract_epi32(a,0)==2*x?0:1;}
-          cl /nologo /O1 /arch:AVX2 avx2.c || exit /b 1
-          avx2.exe || exit /b 1
-          echo native run ok
-          "%SDE%" -snb -- avx2.exe > control.txt 2>&1
-          set CODE=%ERRORLEVEL%
-          type control.txt
-          echo sde exit %CODE%
-          if "%CODE%"=="0" ( echo SDE let AVX2 through, so the next step would prove nothing & exit /b 1 )
-          exit /b 0
-      - name: Start the programs on an emulated AVX-only CPU
-        shell: pwsh
-        run: |
-          $bad = $false
-          foreach ($p in 'strata','strata-vision','strata-dsv41') {
-            $out = & $env:SDE -snb -- ".\stage\$p.exe" --version 2>&1 | Out-String
-            $code = $LASTEXITCODE
-            $out
-            "$p under SDE: exit $code"
-            if ($out -match 'SDE-ERROR|Illegal|not supported|unsupported') { "$p ran an instruction this CPU does not have"; $bad = $true }
-          }
-          if ($bad) { exit 1 }
-          exit 0
