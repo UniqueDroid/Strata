@@ -25,11 +25,22 @@ It is not an official Strata release.
 
 `UPDATE.bat` keeps it current from this fork.
 
+## `strata launch` and the app
+
+They take their engine from `%LOCALAPPDATA%\Strata\components`, not from this folder, and would fetch upstream's AVX2 engine. Install this fork's engine there first:
+
+    INSTALL-AVX-ENGINE.bat
+    strata launch --model-path D:\folder\with\the\shards
+
+It downloads the release zip, checks its digest, gets cuBLAS from NVIDIA's pip packages, makes an engine package and pins it, so a newer upstream
+engine in that folder is not chosen. `INSTALL-AVX-ENGINE.bat --unpin` undoes the pin. Run it again after a new release of this fork.
+
 ## Limits
 
 - The zip does not hold `cublas64_13.dll`: `setup.py` installs NVIDIA's CUDA wheels and points the engine at them. Started by hand from the zip alone,
   `strata.exe` ends with `0xC0000135` (a DLL was not found).
-- The desktop app and `strata update` use upstream's signed feed, whose engines need AVX2. Use `START-HERE.bat` on these CPUs.
+- `strata update` and the app's updates fetch upstream's engines, which need AVX2. They are not used while the pin holds, and are never a fix for this CPU.
+- A newer model can need a newer engine than this release has: `strata launch` then warns, and this fork needs a new build.
 - NVIDIA cards only for the ready-made zip. A GTX 10 or older card needs the CUDA 12 engine, which setup compiles on the PC.
 - AMD on Windows on a CPU without AVX2 stays refused by setup, as upstream. `tools\hip\build_windows.bat` builds with the floor.
 - The CPU's experts run on `ggml-cpu`'s kernels, which upstream describes as a few times slower than on an AVX2 CPU.
