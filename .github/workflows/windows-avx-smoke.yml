@@ -23,7 +23,7 @@ jobs:
   smoke:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,11 +72,14 @@ jobs:
           .\stage\strata.exe --version
           if ($LASTEXITCODE -ne 0) { throw "strata --version exit $LASTEXITCODE" }
       - name: Fetch Intel SDE
+        timeout-minutes: 15
         run: |
-          curl.exe -fsSL -o sde.tar.xz $env:SDE_URL
-          if ($LASTEXITCODE -ne 0) { throw 'SDE download failed' }
+          curl.exe -fsSL --http1.1 --connect-timeout 30 --max-time 240 --retry 2 -o sde.tar.xz $env:SDE_URL
+          if ($LASTEXITCODE -ne 0) { throw "SDE download failed: curl $LASTEXITCODE" }
+          (Get-Item sde.tar.xz).Length
           mkdir sde | Out-Null
           tar -xf sde.tar.xz -C sde
+          if ($LASTEXITCODE -ne 0) { throw "SDE unpack failed: tar $LASTEXITCODE" }
           $exe = (Get-ChildItem sde -Recurse -Filter sde.exe | Select-Object -First 1).FullName
           "SDE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Control - SDE must stop a program that executes AVX2
