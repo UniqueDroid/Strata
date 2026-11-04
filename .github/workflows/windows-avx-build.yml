@@ -102,14 +102,6 @@ jobs:
           python packaging/build_windows_avx.py package --out stage --dist dist
           $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(strata VERSION ([\d.]+)').Matches[0].Groups[1].Value
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      - name: Start test (the engine asked for its version, with the CPU limited to AVX)
-        continue-on-error: true
-        shell: pwsh
-        env:
-          STRATA_FORCE_ISA: avx
-        run: |
-          .\stage\strata.exe --version
-          "exit code $LASTEXITCODE"
       - uses: actions/upload-artifact@v4
         with:
           name: strata-windows-avx

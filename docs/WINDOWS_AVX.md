@@ -13,6 +13,8 @@ It is not an official Strata release.
 - `.github/workflows/windows-avx-build.yml` builds `strata.exe`, `strata_kq.dll`, `strata-vision.exe` and `strata-dsv41.exe` with CUDA 13.0 for
   `sm_75`, `sm_86`, `sm_89` and `sm_120`, and publishes the zip as the release of this version. It runs on a push to `main` that touches the
   engine, and by hand under Actions > Windows AVX engine > Run workflow.
+- `.github/workflows/windows-avx-smoke.yml` runs after each build: public download, digest, setup's CUDA wheels, each program started once.
+  It has no GPU and runs on an AVX2 CPU, so it does not replace a first run on the real PC.
 - `packaging/build_windows_avx.py` is the build script. It stops when a `ggml-cpu` compile line has anything wider than AVX.
 
 ## Using it
@@ -25,6 +27,8 @@ It is not an official Strata release.
 
 ## Limits
 
+- The zip does not hold `cublas64_13.dll`: `setup.py` installs NVIDIA's CUDA wheels and points the engine at them. Started by hand from the zip alone,
+  `strata.exe` ends with `0xC0000135` (a DLL was not found).
 - The desktop app and `strata update` use upstream's signed feed, whose engines need AVX2. Use `START-HERE.bat` on these CPUs.
 - NVIDIA cards only for the ready-made zip. A GTX 10 or older card needs the CUDA 12 engine, which setup compiles on the PC.
 - AMD on Windows on a CPU without AVX2 stays refused by setup, as upstream. `tools\hip\build_windows.bat` builds with the floor.

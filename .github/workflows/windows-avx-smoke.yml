@@ -1,0 +1,69 @@
+name: Windows AVX engine smoke test
+
+# Checks the published zip the way a PC gets it: the public download, the digest setup.py compares, the CUDA wheels setup.py
+# installs, then the programs started for real. The runner has no GPU and its CPU has AVX2, so this covers the package and
+# start-up, not a run on an AVX-only CPU. (Intel's SDE would emulate one, but its download mirror hangs from hosted runners.)
+
+on:
+  push:
+    paths:
+      - .github/workflows/windows-avx-smoke.yml
+  workflow_run:
+    workflows: [Windows AVX engine]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download the published zip and compare its digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl.exe -fsSL -o strata.zip "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/strata-windows-x64.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'public download failed' }
+          $want = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq '.assets[] | select(.name=="strata-windows-x64.zip") | .digest'
+          $have = 'sha256:' + (Get-FileHash strata.zip -Algorithm SHA256).Hash.ToLower()
+          "published $want"; "download  $have"
+          if ($want -ne $have) { throw 'digest differs' }
+          Expand-Archive strata.zip -DestinationPath stage
+          Get-Content stage\BUILD.json
+          if ((Get-Content stage\BUILD.json | ConvertFrom-Json).isa_floor -ne 'avx') { throw 'zip is not the AVX build' }
+      - name: Without the CUDA wheels (expected to report a missing DLL)
+        run: |
+          .\stage\strata.exe --version
+          $code = '0x{0:X8}' -f $LASTEXITCODE
+          "exit code $code"
+          if ($code -ne '0xC0000135') { "note: expected 0xC0000135 on a PC without cuBLAS" }
+          exit 0
+      - name: Install the CUDA wheels setup.py installs
+        run: |
+          $wheels = python -c "import re,ast;print(' '.join(ast.literal_eval(re.search(r'^CUDA_WHEELS = (\[.*?\])', open('setup.py',encoding='utf-8').read(), re.M).group(1))))"
+          "wheels: $wheels"
+          python -m pip install --quiet $wheels.Split(' ')
+          $dir = python -c "import sys,pathlib;print(next(pathlib.Path(p/'nvidia') for p in map(pathlib.Path,sys.path) if (p/'nvidia').is_dir()).joinpath('cu13','bin','x86_64'))"
+          "$dir"
+          if (-not (Test-Path "$dir\cublas64_13.dll")) { throw 'no cublas64_13.dll' }
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Start the programs
+        env:
+          STRATA_FORCE_ISA: avx
+        run: |
+          foreach ($p in 'strata','strata-vision','strata-dsv41') {
+            & ".\stage\$p.exe" --version
+            $code = '0x{0:X8}' -f $LASTEXITCODE
+            "$p exit code $code"
+            if ($code -in '0xC0000135','0xC000007B','0xC000001D','0xC0000005') { throw "$p did not start: $code" }
+          }
+          .\stage\strata.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "strata --version exit $LASTEXITCODE" }
